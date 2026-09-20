@@ -1,0 +1,85 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isStaff() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/staff/$(request.auth.uid));
+    }
+
+    match /users/{uid} {
+      // CHANGED: staff can read any user (dashboard member roster)
+      allow read: if isStaff() || (request.auth != null && request.auth.uid == uid);
+      allow create: if request.auth != null && request.auth.uid == uid;
+      allow update: if (request.auth != null && request.auth.uid == uid &&
+        request.resource.data.isPriveMember == resource.data.isPriveMember &&
+        request.resource.data.membershipId == resource.data.membershipId &&
+        request.resource.data.membershipSince == resource.data.membershipSince) ||
+        isStaff();
+      allow delete: if false;
+    }
+
+    match /bookings/{booking} {
+      allow create: if true; // public booking form
+      //
+      // OPTIONAL hardening (test your booking form first). Stops anyone from posting a
+      // booking that is already "confirmed" or that fakes a low fee, which would skew
+      // the dashboard numbers:
+      // allow create: if request.resource.data.status == 'pending';
+
+      // Staff can read/update anything. A signed-in client can only read
+      // their own booking, either already linked (uid), or taken at the
+      // counter under their (verified) email before they had an account.
+      allow read: if isStaff() ||
+        (request.auth != null &&
+         (resource.data.uid == request.auth.uid ||
+          (request.auth.token.email_verified == true &&
+           resource.data.email == request.auth.token.email)));
+
+      allow update: if isStaff() ||
+        (request.auth != null &&
+         request.auth.token.email_verified == true &&
+         resource.data.email == request.auth.token.email &&
+         !("uid" in resource.data) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(["uid"]) &&
+         request.resource.data.uid == request.auth.uid);
+
+      allow delete: if false;
+    }
+
+    match /staff/{uid} {
+      // The dashboard looks up staff/{your uid}. Docs must be keyed by the Auth uid.
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false; // manage staff in the Firebase console
+    }
+
+    match /priveMembers/{memberId} {
+      // CHANGED: public can still fetch one member by ID (membership check),
+      // but only staff can list the whole collection.
+      allow get: if true;
+      allow list: if isStaff();
+      // CHANGED: staff can add and edit members (approve applications, Add Privé Member)
+      allow create, update: if isStaff();
+      allow delete: if false;
+    }
+
+    match /availability/{date} {
+      allow read: if true;
+      allow create: if request.resource.data.count == 1;
+      allow update: if request.resource.data.count == resource.data.count + 1;
+      allow delete: if false;
+    }
+
+    match /priveApplications/{applicationId} {
+      allow create: if true;
+      allow read, update: if isStaff();
+      allow delete: if false;
+    }
+
+    match /applications/{applicationId} {
+      allow create: if true;
+      allow read, update: if isStaff();
+      allow delete: if false;
+    }
+  }
+}
